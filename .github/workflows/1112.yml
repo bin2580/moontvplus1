@@ -1,19 +1,72 @@
-- name: Merge upstream updates
-  if: steps.check.outputs.has_updates == 'true'
-  run: |
-    git checkout main
-    
-    # 使用策略选项处理冲突
-    # 优先使用上游版本（-X theirs）
-    git merge upstream/main -X theirs --no-edit
-    
-    # 或者优先使用本地版本（-X ours）
-    # git merge upstream/main -X ours --no-edit
-    
-    # 检查是否有需要推送的更改
-    if git diff --quiet HEAD origin/main; then
-      echo "No changes to push"
-    else
-      git push origin main
-      echo "Successfully pushed updates"
-    fi
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 UTC 时间 0 点运行
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: $
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/mtvpls/MoonTVPlus.git || true
+          git remote -v
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Check for updates
+        id: check
+        run: |
+          git checkout main
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "No updates available"
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          else
+            echo "Updates available"
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream updates (优先使用上游版本)
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git checkout main
+          
+          # 选项1：优先使用上游版本（推荐，保持与上游一致）
+          # 当冲突时，使用上游的版本覆盖本地版本
+          git merge upstream/main -X theirs --no-edit
+          
+          # 选项2：优先使用本地版本（保留您的修改）
+          # 当冲突时，使用本地的版本覆盖上游版本
+          # git merge upstream/main -X ours --no-edit
+          
+          # 检查是否有需要推送的更改
+          if git diff --quiet HEAD origin/main; then
+            echo "No changes to push"
+          else
+            git push origin main
+            echo "Successfully pushed updates"
+          fi
+
+      - name: Notify success
+        if: success()
+        run: echo "Sync completed successfully"
+
+      - name: Notify failure
+        if: failure()
+        run: echo "Sync failed, check logs for details"
