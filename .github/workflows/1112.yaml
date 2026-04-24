@@ -1,0 +1,19 @@
+- name: Merge upstream updates
+  if: steps.check.outputs.has_updates == 'true'
+  run: |
+    git checkout main
+    
+    # 使用策略选项处理冲突
+    # 优先使用上游版本（-X theirs）
+    git merge upstream/main -X theirs --no-edit
+    
+    # 或者优先使用本地版本（-X ours）
+    # git merge upstream/main -X ours --no-edit
+    
+    # 检查是否有需要推送的更改
+    if git diff --quiet HEAD origin/main; then
+      echo "No changes to push"
+    else
+      git push origin main
+      echo "Successfully pushed updates"
+    fi
