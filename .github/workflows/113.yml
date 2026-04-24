@@ -1,0 +1,81 @@
+name: Sync upstream (强制更新)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 UTC 时间 0 点运行
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: $
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/mtvpls/MoonTVPlus.git || true
+          git remote -v
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Check for updates
+        id: check
+        run: |
+          git checkout main
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "No updates available"
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          else
+            echo "Updates available"
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Force sync with upstream
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git checkout main
+          
+          # 备份当前分支（可选）
+          git branch backup/main-$(date +%Y%m%d-%H%M%S)
+          
+          # 重置到上游状态（完全覆盖本地修改）
+          git reset --hard upstream/main
+          
+          # 强制推送到您的仓库
+          git push origin main --force
+          
+          echo "Force sync completed. Local changes have been overwritten with upstream version."
+
+      - name: Cleanup backup branches (可选)
+        if: always()
+        run: |
+          # 删除30天前的备份分支
+          git branch | grep 'backup/main-' | while read branch; do
+            branch_date=$(echo $branch | cut -d'-' -f2)
+            current_date=$(date +%Y%m%d)
+            days_diff=$(( (current_date - branch_date) / 10000 ))
+            if [ $days_diff -gt 30 ]; then
+              git branch -D $branch
+              echo "Deleted old backup branch: $branch"
+            fi
+          done
+
+      - name: Notify success
+        if: success()
+        run: echo "Force sync completed successfully"
+
+      - name: Notify failure
+        if: failure()
+        run: echo "Force sync failed, check logs for details"
