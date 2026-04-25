@@ -1,0 +1,57 @@
+name: Download and Sync from Upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天UTC时间0点自动运行（北京时间8点）
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Download latest from upstream
+        run: |
+          echo "开始下载上游仓库最新版本..."
+          
+          # 下载最新main分支
+          wget -q -O upstream.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
+          
+          # 解压
+          unzip -q -o upstream.zip -d temp_upstream/
+          
+          echo "复制文件到当前仓库..."
+          # 复制所有文件（排除.git目录）
+          cp -rf temp_upstream/MoonTVPlus-main/* ./
+          
+          # 复制隐藏文件
+          [ -f temp_upstream/MoonTVPlus-main/.dockerignore ] && cp temp_upstream/MoonTVPlus-main/.dockerignore . || true
+          [ -f temp_upstream/MoonTVPlus-main/.gitignore ] && cp temp_upstream/MoonTVPlus-main/.gitignore . || true
+          [ -d temp_upstream/MoonTVPlus-main/.github ] && cp -r temp_upstream/MoonTVPlus-main/.github . || true
+          
+          echo "清理临时文件..."
+          # 清理
+          rm -rf temp_upstream upstream.zip
+          
+          echo "列出更新后的文件："
+          ls -la
+      
+      - name: Commit and push changes
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # 检查是否有更改
+          if git diff --quiet; then
+            echo "没有检测到更改，跳过提交"
+          else
+            echo "检测到更改，正在提交..."
+            git add .
+            git commit -m "自动同步上游仓库 $(date '+%Y-%m-%d %H:%M:%S')"
+            git push origin main
+            echo "更改已提交并推送"
+          fi
