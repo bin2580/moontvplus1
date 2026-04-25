@@ -12,46 +12,104 @@ jobs:
       - name: Checkout current repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # 获取完整历史
       
-      - name: Download latest from upstream
-        run: |
-          echo "开始下载上游仓库最新版本..."
-          
-          # 下载最新main分支
-          wget -q -O upstream.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
-          
-          # 解压
-          unzip -q -o upstream.zip -d temp_upstream/
-          
-          echo "复制文件到当前仓库..."
-          # 复制所有文件（排除.git目录）
-          cp -rf temp_upstream/MoonTVPlus-main/* ./
-          
-          # 复制隐藏文件
-          [ -f temp_upstream/MoonTVPlus-main/.dockerignore ] && cp temp_upstream/MoonTVPlus-main/.dockerignore . || true
-          [ -f temp_upstream/MoonTVPlus-main/.gitignore ] && cp temp_upstream/MoonTVPlus-main/.gitignore . || true
-          [ -d temp_upstream/MoonTVPlus-main/.github ] && cp -r temp_upstream/MoonTVPlus-main/.github . || true
-          
-          echo "清理临时文件..."
-          # 清理
-          rm -rf temp_upstream upstream.zip
-          
-          echo "列出更新后的文件："
-          ls -la
-      
-      - name: Commit and push changes
+      - name: Setup Git identity
         run: |
           git config --global user.email "github-actions@github.com"
           git config --global user.name "GitHub Actions"
+      
+      - name: Download latest from upstream
+        run: |
+          echo "=== 开始同步上游仓库 ==="
+          echo "当前时间: $(date)"
           
-          # 检查是否有更改
-          if git diff --quiet; then
-            echo "没有检测到更改，跳过提交"
-          else
-            echo "检测到更改，正在提交..."
-            git add .
-            git commit -m "自动同步上游仓库 $(date '+%Y-%m-%d %H:%M:%S')"
-            git push origin main
-            echo "更改已提交并推送"
+          # 下载上游仓库最新版本
+          echo "1. 下载上游仓库压缩包..."
+          wget -q --show-progress -O upstream.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
+          
+          # 解压
+          echo "2. 解压文件..."
+          unzip -q -o upstream.zip -d temp_upstream/
+          
+          # 备份我们自己的工作流文件
+          echo "3. 备份当前工作流文件..."
+          if [ -f .github/workflows/download-sync.yml ]; then
+            cp .github/workflows/download-sync.yml /tmp/my-workflow-backup.yml
+            echo "工作流文件已备份"
           fi
+          
+          # 删除上游的.github/workflows目录（避免权限问题）
+          echo "4. 清理上游的workflows目录..."
+          rm -rf temp_upstream/MoonTVPlus-main/.github/workflows 2>/dev/null || true
+          
+          # 复制所有文件（使用rsync更可靠）
+          echo "5. 复制文件到当前仓库..."
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='.github/workflows' \
+            --exclude='README.md' \  # 可选：排除README，避免覆盖你的说明
+            temp_upstream/MoonTVPlus-main/ .
+          
+          # 恢复我们自己的工作流文件
+          echo "6. 恢复工作流文件..."
+          rm -rf .github/workflows 2>/dev/null || true
+          mkdir -p .github/workflows
+          if [ -f /tmp/my-workflow-backup.yml ]; then
+            cp /tmp/my-workflow-backup.yml .github/workflows/download-sync.yml
+            echo "工作流文件已恢复"
+          else
+            # 如果没有备份，使用当前文件
+            echo "使用当前工作流配置"
+          fi
+          
+          # 确保必要的目录存在
+          mkdir -p .github .github/workflows
+          
+          # 清理临时文件
+          echo "7. 清理临时文件..."
+          rm -rf temp_upstream upstream.zip /tmp/my-workflow-backup.yml 2>/dev/null || true
+          
+          echo "=== 文件同步完成 ==="
+          echo "更新的文件数量: $(git status --porcelain | wc -l)"
+      
+      - name: Check for changes
+        id: check_changes
+        run: |
+          # 检查是否有实际更改
+          if git diff --quiet --exit-code; then
+            echo "没有检测到更改"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "检测到更改"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "更改的文件:"
+            git status --porcelain
+          fi
+      
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          echo "提交更改..."
+          
+          # 添加所有更改
+          git add .
+          
+          # 提交
+          git commit -m "🔄 自动同步上游仓库 (mtvpls/MoonTVPlus)
+          
+          同步时间: $(date '+%Y-%m-%d %H:%M:%S')
+          上游仓库: https://github.com/mtvpls/MoonTVPlus
+          上游版本: $(curl -s https://api.github.com/repos/mtvpls/MoonTVPlus/commits/main | jq -r '.sha[0:8]' 2>/dev/null || echo 'unknown')"
+          
+          # 推送更改
+          echo "推送到仓库..."
+          git push origin main
+          
+          echo "✅ 同步完成并已推送"
+      
+      - name: No changes found
+        if: steps.check_changes.outputs.has_changes == 'false'
+        run: |
+          echo "✅ 没有检测到更改，跳过提交"
+          echo "当前仓库已是最新版本"
