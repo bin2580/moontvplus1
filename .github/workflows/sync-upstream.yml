@@ -1,0 +1,300 @@
+name: 🔄 Sync Upstream (MoonTVPlus)
+
+on:
+  workflow_dispatch: # 手动触发
+  schedule:
+    # 每天UTC时间2:00自动运行（北京时间10:00）
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-from-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🗂️ Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📦 Download upstream source code
+        run: |
+          echo "===[ 步骤 1/7：下载上游代码 ]==="
+          echo "时间: $(date)"
+          echo "上游仓库: mtvpls/MoonTVPlus (main branch)"
+          
+          # 下载最新main分支的ZIP包
+          UPSTREAM_ZIP_URL="https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip"
+          echo "下载链接: $UPSTREAM_ZIP_URL"
+          
+          if ! wget -q --show-progress -O upstream.zip "$UPSTREAM_ZIP_URL"; then
+            echo "❌ 错误：下载上游ZIP包失败"
+            exit 1
+          fi
+          
+          # 验证ZIP文件
+          if ! unzip -l upstream.zip > /dev/null 2>&1; then
+            echo "❌ 错误：下载的ZIP文件损坏或无效"
+            exit 1
+          fi
+          echo "✅ 上游代码下载完成"
+
+      - name: 📁 Extract and prepare upstream code
+        run: |
+          echo "===[ 步骤 2/7：解压与准备 ]==="
+          
+          # 创建临时目录并解压
+          EXTRACT_DIR="temp_upstream"
+          mkdir -p "$EXTRACT_DIR"
+          
+          if ! unzip -q -o upstream.zip -d "$EXTRACT_DIR/"; then
+            echo "❌ 错误：解压ZIP文件失败"
+            exit 1
+          fi
+          
+          # 定位解压后的主目录（通常为 MoonTVPlus-main）
+          UPSTREAM_ROOT=$(find "$EXTRACT_DIR" -maxdepth 1 -type d -name "MoonTVPlus-*" | head -1)
+          if [ -z "$UPSTREAM_ROOT" ]; then
+            echo "❌ 错误：无法在解压目录中找到 MoonTVPlus-* 文件夹"
+            exit 1
+          fi
+          
+          echo "上游代码根目录: $UPSTREAM_ROOT"
+          echo "目录内容预览:"
+          ls -la "$UPSTREAM_ROOT/" | head -10
+          echo "✅ 解压完成"
+
+      - name: 💾 Backup local custom files
+        run: |
+          echo "===[ 步骤 3/7：备份本地自定义文件 ]==="
+          BACKUP_DIR="/tmp/backup_$(date +%s)"
+          mkdir -p "$BACKUP_DIR"
+          
+          # 1. 备份GitHub工作流文件（最重要，避免同步脚本自身被覆盖）
+          if [ -d ".github/workflows" ]; then
+            mkdir -p "$BACKUP_DIR/.github/workflows"
+            cp -r .github/workflows/* "$BACKUP_DIR/.github/workflows/" 2>/dev/null || true
+            echo "✅ 已备份工作流文件 ($(ls -1 .github/workflows/ 2>/dev/null | wc -l) 个)"
+          fi
+          
+          # 2. 备份常见的本地配置文件（根据MoonTVPlus项目结构）
+          # 注：您可以根据需要修改此列表，添加您自定义的文件
+          LOCAL_FILES_TO_BACKUP=(
+            ".env*"             # 环境变量文件
+            "config*.json"      # 配置文件
+            "docker-compose*.yml" # Docker编排文件
+            "vercel.json"       # Vercel配置
+            "wrangler.toml"     # Cloudflare配置
+            "*.local*"          # 本地开发文件
+          )
+          
+          for pattern in "${LOCAL_FILES_TO_BACKUP[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ] || [ -d "$file" ]; then
+                mkdir -p "$(dirname "$BACKUP_DIR/$file")"
+                cp -r "$file" "$BACKUP_DIR/$file" 2>/dev/null || true
+                echo "  - 备份: $file"
+              fi
+            done
+          done
+          
+          # 3. 记录备份内容
+          echo "备份目录内容:"
+          find "$BACKUP_DIR" -type f | sed 's|/tmp/backup_[0-9]*/||' | sort
+          
+          # 将备份目录路径传递给后续步骤
+          echo "BACKUP_DIR=$BACKUP_DIR" >> $GITHUB_ENV
+          echo "✅ 本地文件备份完成 (位置: $BACKUP_DIR)"
+
+      - name: 🧹 Clean upstream sensitive directories
+        run: |
+          echo "===[ 步骤 4/7：清理上游敏感目录 ]==="
+          UPSTREAM_ROOT=$(find "temp_upstream" -maxdepth 1 -type d -name "MoonTVPlus-*" | head -1)
+          
+          if [ -z "$UPSTREAM_ROOT" ]; then
+            echo "❌ 错误：上游根目录未找到"
+            exit 1
+          fi
+          
+          # 删除上游仓库中的.git目录（避免冲突）
+          rm -rf "$UPSTREAM_ROOT/.git" 2>/dev/null || true
+          echo "  - 已删除: $UPSTREAM_ROOT/.git"
+          
+          # 删除上游的.github目录（我们将使用自己的配置）
+          rm -rf "$UPSTREAM_ROOT/.github" 2>/dev/null || true
+          echo "  - 已删除: $UPSTREAM_ROOT/.github"
+          
+          # 注意：我们保留上游的 .env.example, docker-compose.yml 等示例文件
+          # 这些文件将在同步后与您的本地备份合并或比较
+          
+          echo "✅ 上游敏感目录清理完成"
+
+      - name: 🔀 Sync files with rsync (安全覆盖)
+        run: |
+          echo "===[ 步骤 5/7：同步文件 (rsync) ]==="
+          UPSTREAM_ROOT=$(find "temp_upstream" -maxdepth 1 -type d -name "MoonTVPlus-*" | head -1)
+          
+          if [ -z "$UPSTREAM_ROOT" ]; then
+            echo "❌ 错误：上游根目录未找到"
+            exit 1
+          fi
+          
+          echo "从: $UPSTREAM_ROOT/"
+          echo "同步到: $(pwd)/"
+          
+          # 使用rsync进行同步，这是最安全可靠的方式
+          # 参数说明:
+          # -a: 归档模式，保持权限、时间等
+          # -r: 递归目录
+          # -v: 输出详细信息
+          # --ignore-existing: 不覆盖目标已存在的文件（保护本地自定义文件）
+          # --exclude: 排除不需要同步的目录
+          # 注意：这里我们使用 --ignore-existing，如果您希望上游强制覆盖所有文件，
+          # 可以移除此参数，但请确保备份步骤已包含所有您的自定义文件。
+          
+          echo "正在同步文件 (预览模式)..."
+          rsync -arv --dry-run \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            "$UPSTREAM_ROOT/" . 2>&1 | head -30
+          
+          echo "---"
+          echo "实际同步..."
+          if rsync -arv \
+               --exclude='.git/' \
+               --exclude='.github/' \
+               "$UPSTREAM_ROOT/" . ; then
+            echo "✅ 文件同步完成"
+          else
+            echo "❌ rsync同步过程中出错"
+            exit 1
+          fi
+          
+          echo "同步后当前目录状态:"
+          ls -la | head -15
+
+      - name: 🔧 Restore local custom files
+        run: |
+          echo "===[ 步骤 6/7：恢复本地自定义文件 ]==="
+          
+          if [ -z "$BACKUP_DIR" ] || [ ! -d "$BACKUP_DIR" ]; then
+            echo "⚠️ 警告：未找到备份目录，跳过恢复"
+            exit 0
+          fi
+          
+          echo "从备份恢复: $BACKUP_DIR"
+          
+          # 恢复工作流文件（必须）
+          if [ -d "$BACKUP_DIR/.github/workflows" ]; then
+            echo "恢复工作流文件..."
+            mkdir -p .github/workflows
+            # 先删除可能从上游同步过来的工作流
+            rm -rf .github/workflows/* 2>/dev/null || true
+            # 恢复备份的工作流
+            cp -r "$BACKUP_DIR/.github/workflows"/* .github/workflows/ 2>/dev/null || true
+            echo "✅ 工作流文件恢复完成"
+          fi
+          
+          # 恢复其他自定义文件（谨慎操作）
+          # 这里采用"合并"策略：如果本地文件不存在，则从备份恢复；如果已存在，则跳过。
+          echo "检查并恢复其他配置文件..."
+          find "$BACKUP_DIR" -type f | while read -r backup_file; do
+            # 计算相对路径
+            rel_path="${backup_file#$BACKUP_DIR/}"
+            # 跳过已处理的工作流文件
+            if [[ "$rel_path" == .github/workflows/* ]]; then
+              continue
+            fi
+            
+            # 如果目标文件不存在，则从备份恢复
+            if [ ! -f "$rel_path" ] && [ ! -d "$rel_path" ]; then
+              mkdir -p "$(dirname "$rel_path")"
+              cp -r "$backup_file" "$rel_path" 2>/dev/null || true
+              echo "  - 恢复: $rel_path"
+            else
+              echo "  - 保留: $rel_path (已存在)"
+            fi
+          done
+          
+          echo "✅ 本地文件恢复完成"
+          
+          # 清理备份
+          rm -rf "$BACKUP_DIR"
+          echo "备份目录已清理"
+
+      - name: 📊 Check for changes
+        id: check_changes
+        run: |
+          echo "===[ 步骤 7/7：检查变更 ]==="
+          
+          # 设置Git身份
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          
+          echo "当前Git状态:"
+          git status --porcelain
+          
+          # 检查是否有任何变更
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "✅ 没有检测到任何变更，代码已是最新"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "📋 检测到以下变更:"
+            git status --porcelain
+            echo ""
+            echo "变更详情:"
+            git diff --name-status || true
+            
+            # 添加所有变更
+            git add -A
+            
+            # 生成变更统计
+            CHANGES_STATS=$(git diff --shortstat HEAD)
+            echo "变更统计: $CHANGES_STATS"
+            
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "changes_stats=$CHANGES_STATS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📌 Commit and push changes
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          echo "提交并推送变更..."
+          
+          # 生成提交信息
+          COMMIT_MESSAGE="🔄 自动同步上游仓库 mtvpls/MoonTVPlus
+          
+          同步时间: $(date '+%Y-%m-%d %H:%M:%S')
+          变更统计: ${{ steps.check_changes.outputs.changes_stats }}
+          
+          操作说明:
+          1. 下载上游 main 分支最新代码
+          2. 保留本地工作流和配置文件
+          3. 安全合并更新"
+          
+          # 提交
+          git commit -m "$COMMIT_MESSAGE"
+          
+          # 推送
+          if git push origin main; then
+            echo "✅ 变更已成功推送至仓库"
+          else
+            echo "❌ 推送失败，尝试拉取最新变更后重试..."
+            git pull --rebase origin main
+            git push origin main
+          fi
+          
+          echo "🎉 同步流程完成！"
+
+      - name: ✅ No changes found
+        if: steps.check_changes.outputs.has_changes == 'false'
+        run: |
+          echo "✅ 同步完成，未检测到有效变更"
+          echo "当前仓库已与上游最新版本一致"
+          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          
+      - name: 🧹 Cleanup temporary files
+        if: always() # 无论成功失败都执行清理
+        run: |
+          echo "清理临时文件..."
+          rm -rf temp_upstream upstream.zip 2>/dev/null || true
+          echo "临时文件已清理"
