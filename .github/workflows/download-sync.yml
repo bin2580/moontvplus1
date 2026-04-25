@@ -1,4 +1,4 @@
-name: Download and Sync from Upstream
+name: Safe Sync
 
 on:
   workflow_dispatch:
@@ -7,62 +7,28 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout current repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         
-      - name: Download and sync safely
+      - name: Sync without deleting
         run: |
-          echo "=== 安全同步开始 ==="
+          # 1. 下载上游
+          wget -q -O up.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
+          unzip -q -o up.zip -d upstream/
           
-          # 1. 创建临时目录
-          mkdir -p /tmp/sync_temp
-          cd /tmp/sync_temp
+          # 2. 只复制，不删除（使用rsync的更新模式）
+          rsync -av --update upstream/MoonTVPlus-main/ ./
           
-          # 2. 下载上游仓库
-          wget -q -O upstream.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
-          unzip -q -o upstream.zip
-          
-          # 3. 回到工作目录
-          cd "$GITHUB_WORKSPACE"
-          
-          # 4. 备份重要文件
-          echo "备份重要文件..."
-          mkdir -p /tmp/backup
-          [ -f .gitignore ] && cp .gitignore /tmp/backup/ || true
-          [ -f README.md ] && cp README.md /tmp/backup/ || true
-          [ -d .github/workflows ] && cp -r .github/workflows /tmp/backup/ || true
-          
-          # 5. 清理当前目录（除了.git）
-          echo "清理当前目录..."
-          find . -maxdepth 1 ! -name '.git' ! -name '.' -type f -exec rm -f {} \;
-          find . -maxdepth 1 ! -name '.git' ! -name '.' -type d -exec rm -rf {} \; 2>/dev/null || true
-          
-          # 6. 复制上游文件
-          echo "复制上游文件..."
-          cp -r /tmp/sync_temp/MoonTVPlus-main/* . 2>/dev/null || true
-          
-          # 7. 恢复备份文件
-          echo "恢复备份文件..."
-          [ -f /tmp/backup/.gitignore ] && cp /tmp/backup/.gitignore . || true
-          [ -f /tmp/backup/README.md ] && cp /tmp/backup/README.md . || true
-          [ -d /tmp/backup/workflows ] && cp -r /tmp/backup/workflows .github/ || true
-          
-          # 8. 确保必要目录存在
-          mkdir -p .github/workflows
-          
-          echo "=== 同步完成 ==="
-          echo "当前文件:"
-          ls -la
-      
-      - name: Commit changes
-        run: |
-          git config --global user.email "github-actions@github.com"
-          git config --global user.name "GitHub Actions"
-          
-          git add .
-          if git diff --quiet --exit-code; then
-            echo "没有更改"
-          else
-            git commit -m "恢复并同步上游仓库 $(date)"
-            git push origin main
+          # 3. 确保我们的工作流不被覆盖
+          if [ -f .github/workflows/download-sync.yml ]; then
+            cp .github/workflows/download-sync.yml /tmp/my-workflow.yml
           fi
+          
+          # 4. 清理
+          rm -rf upstream up.zip
+          
+          # 5. 提交
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add .
+          git commit -m "安全更新 $(date)" || echo "无更改"
+          git push
