@@ -4,7 +4,7 @@ on:
   workflow_dispatch: # 手动触发
   schedule:
     # 每天UTC时间2:00自动运行（北京时间10:00）
-    - cron: '0 2 * * *'
+    - cron: '0 1 */5 * *'
 
 jobs:
   sync-from-upstream:
