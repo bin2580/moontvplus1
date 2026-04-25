@@ -1,9 +1,7 @@
 name: Download and Sync from Upstream
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # 每天UTC时间0点自动运行（北京时间8点）
-  workflow_dispatch:      # 允许手动触发
+  workflow_dispatch:  # 先只支持手动触发，测试成功后再添加定时
 
 jobs:
   sync:
@@ -12,79 +10,77 @@ jobs:
       - name: Checkout current repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整历史
+          fetch-depth: 0
       
-      - name: Setup Git identity
+      - name: Setup environment
         run: |
-          git config --global user.email "github-actions@github.com"
-          git config --global user.name "GitHub Actions"
+          echo "工作目录: $GITHUB_WORKSPACE"
+          echo "当前目录: $(pwd)"
+          ls -la
       
       - name: Download latest from upstream
         run: |
           echo "=== 开始同步上游仓库 ==="
           echo "当前时间: $(date)"
           
-          # 下载上游仓库最新版本
-          echo "1. 下载上游仓库压缩包..."
+          # 1. 下载上游仓库
+          echo "1. 下载上游仓库..."
           wget -q --show-progress -O upstream.zip https://github.com/mtvpls/MoonTVPlus/archive/refs/heads/main.zip
           
-          # 解压
+          # 2. 解压
           echo "2. 解压文件..."
           unzip -q -o upstream.zip -d temp_upstream/
           
-          # 备份我们自己的工作流文件
+          # 3. 备份我们自己的工作流文件
           echo "3. 备份当前工作流文件..."
           if [ -f .github/workflows/download-sync.yml ]; then
-            cp .github/workflows/download-sync.yml /tmp/my-workflow-backup.yml
+            mkdir -p /tmp/backup
+            cp .github/workflows/download-sync.yml /tmp/backup/
             echo "工作流文件已备份"
           fi
           
-          # 删除上游的.github/workflows目录（避免权限问题）
+          # 4. 删除上游的.github/workflows目录
           echo "4. 清理上游的workflows目录..."
           rm -rf temp_upstream/MoonTVPlus-main/.github/workflows 2>/dev/null || true
           
-          # 复制所有文件（使用rsync更可靠）
+          # 5. 使用cp命令而不是rsync（更简单可靠）
           echo "5. 复制文件到当前仓库..."
-          rsync -av --delete \
-            --exclude='.git' \
-            --exclude='.github/workflows' \
-            --exclude='README.md' \  # 可选：排除README，避免覆盖你的说明
-            temp_upstream/MoonTVPlus-main/ .
+          # 先删除除了.git之外的所有文件
+          find . -maxdepth 1 ! -name '.git' ! -name '.' -exec rm -rf {} \; 2>/dev/null || true
           
-          # 恢复我们自己的工作流文件
+          # 复制上游文件
+          cp -r temp_upstream/MoonTVPlus-main/* . 2>/dev/null || true
+          cp temp_upstream/MoonTVPlus-main/.* . 2>/dev/null || true
+          
+          # 6. 恢复我们自己的工作流文件
           echo "6. 恢复工作流文件..."
           rm -rf .github/workflows 2>/dev/null || true
           mkdir -p .github/workflows
-          if [ -f /tmp/my-workflow-backup.yml ]; then
-            cp /tmp/my-workflow-backup.yml .github/workflows/download-sync.yml
+          if [ -f /tmp/backup/download-sync.yml ]; then
+            cp /tmp/backup/download-sync.yml .github/workflows/download-sync.yml
             echo "工作流文件已恢复"
-          else
-            # 如果没有备份，使用当前文件
-            echo "使用当前工作流配置"
           fi
           
-          # 确保必要的目录存在
-          mkdir -p .github .github/workflows
-          
-          # 清理临时文件
+          # 7. 清理临时文件
           echo "7. 清理临时文件..."
-          rm -rf temp_upstream upstream.zip /tmp/my-workflow-backup.yml 2>/dev/null || true
+          rm -rf temp_upstream upstream.zip /tmp/backup 2>/dev/null || true
           
           echo "=== 文件同步完成 ==="
-          echo "更新的文件数量: $(git status --porcelain | wc -l)"
+          echo "当前文件列表:"
+          ls -la | head -20
       
       - name: Check for changes
         id: check_changes
         run: |
-          # 检查是否有实际更改
+          # 检查git状态
+          git status --porcelain
+          
           if git diff --quiet --exit-code; then
             echo "没有检测到更改"
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
             echo "检测到更改"
             echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "更改的文件:"
-            git status --porcelain
           fi
       
       - name: Commit and push changes
@@ -92,15 +88,19 @@ jobs:
         run: |
           echo "提交更改..."
           
+          # 设置Git身份
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
           # 添加所有更改
           git add .
           
           # 提交
-          git commit -m "🔄 自动同步上游仓库 (mtvpls/MoonTVPlus)
+          git commit -m "🔄 自动同步上游仓库
           
           同步时间: $(date '+%Y-%m-%d %H:%M:%S')
-          上游仓库: https://github.com/mtvpls/MoonTVPlus
-          上游版本: $(curl -s https://api.github.com/repos/mtvpls/MoonTVPlus/commits/main | jq -r '.sha[0:8]' 2>/dev/null || echo 'unknown')"
+          上游仓库: mtvpls/MoonTVPlus
+          操作: 下载并覆盖更新"
           
           # 推送更改
           echo "推送到仓库..."
