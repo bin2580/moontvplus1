@@ -1,9 +1,0 @@
-ignoredBuiltDependencies:
-  - bufferutil
-  - esbuild
-  - sharp
-  - unrs-resolver
-  - workerd
-
-onlyBuiltDependencies:
-  - better-sqlite3
